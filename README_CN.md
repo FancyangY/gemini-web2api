@@ -277,26 +277,100 @@ curl http://localhost:8082/v1/chat/completions \
 
 ## Docker 部署
 
+### 从 GHCR 拉取（推荐）
+
+镜像地址：`ghcr.io/fancyangy/gemini-web2api:latest`，支持 `linux/amd64` 和
+`linux/arm64`。首次使用前，需先完成下方的 GitHub Actions 发布。
+
+在项目目录执行（PowerShell 也可以使用这些命令）：
+
 ```bash
 cp config.example.json config.json
-docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json gemini-web2api
 ```
 
-或使用 Docker Compose:
+编辑 `config.json`，将示例密钥 `sk-gemini` 改为自己的 `api_keys`；容器内保持
+`host` 为 `0.0.0.0`、`port` 为 `8081`，然后启动：
 
 ```bash
-cp config.example.json config.json
+docker compose pull
 docker compose up -d
+docker compose logs -f
 ```
 
-如需挂载 Cookie 文件:
+客户端地址为 `http://localhost:8081/v1`。更新镜像时再次执行
+`docker compose pull` 和 `docker compose up -d`。
+
+Compose 默认读取 `docker-compose.yml`。可在项目根目录的 `.env` 中设置
+`GEMINI_WEB2API_PORT=8082` 来修改宿主机端口，或设置
+`GEMINI_WEB2API_IMAGE=ghcr.io/fancyangy/gemini-web2api:v1.1.0` 来固定已发布的版本。
+这些是 Compose 变量；应用配置仍通过挂载的 `config.json` 读取。
+
+也可以不用 Compose，直接拉取并运行：
 
 ```bash
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
+docker pull ghcr.io/fancyangy/gemini-web2api:latest
+docker run -d --name gemini-web2api --restart unless-stopped -p 8081:8081 -v ./config.json:/app/config.json:ro -v gemini-web2api-data:/data ghcr.io/fancyangy/gemini-web2api:latest
 ```
 
-此时 `config.json` 中设置 `"cookie_file": "/app/cookie.txt"`.
+镜像以 UID/GID `10001:10001` 运行，配置文件只读挂载。工作目录为 `/data`，
+示例配置的相对 SQLite 缓存路径会保存在数据卷中，重建容器后仍保留；
+`docker compose down -v` 会删除该数据卷。Linux 上挂载的配置和 Cookie 文件
+需允许 UID 10001 读取；若改用宿主机目录挂载 `/data`，也需允许该用户写入。
+
+### 挂载 Cookie
+
+在 `config.json` 中设置 `"cookie_file": "/app/gemini-auth.json"`，并在 Compose
+服务的 `volumes` 中追加以下挂载（先准备好扩展导出的 `gemini-auth.json`）：
+
+```yaml
+      - type: bind
+        source: ./gemini-auth.json
+        target: /app/gemini-auth.json
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+执行 `docker compose up -d --force-recreate` 应用更改。
+使用 `docker run` 时，在镜像名之前追加
+`-v ./gemini-auth.json:/app/gemini-auth.json:ro`。普通 `cookie.txt` 也可以按相同方式挂载。
+Cookie 路径建议使用容器内的绝对路径；相对路径以 `/data` 为起点。
+
+### 本地构建
+
+已准备好 `config.json` 时执行：
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build
+```
+
+### 发布到 GitHub Container Registry
+
+将这些文件提交并推送到 `FancyangY/gemini-web2api` 后，
+[Docker / GHCR 工作流](https://github.com/FancyangY/gemini-web2api/actions)
+会先运行单元测试、构建镜像，并验证容器启动、API 鉴权和重建后的缓存持久化。
+通过后再发布 amd64 / arm64 镜像，规则如下：
+
+| 触发方式 | 镜像标签 |
+|----------|----------|
+| 推送到默认分支 `main` | `latest`、`main`、`sha-<短提交号>` |
+| 推送 `v*` 标签，例如 `v1.1.0` | `v1.1.0`、`sha-<短提交号>` |
+| Actions 中手动 Run workflow | 所选分支或标签对应的镜像；选择默认分支时更新 `latest` |
+| Pull Request | 仅验证，不发布 |
+
+工作流也监听 `master` 分支；只有默认分支会更新 `latest`。
+发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，工作流已声明 `packages: write`，
+无需额外配置 PAT。若仓库是 fork，请先在 Actions 页面启用工作流；若组织策略
+禁止发布 Packages，需要在仓库或组织设置中放开该权限。
+
+首次发布后，在 GitHub 的 **Packages → gemini-web2api → Package settings →
+Change visibility** 中将镜像设为 **Public**，其他机器即可匿名 `docker pull`。
+公开仓库并不代表新建的 GHCR 包会自动公开。私有包需要先使用具备
+`read:packages` 权限的凭据登录 `ghcr.io`。若已有同名包但发布报权限错误，
+在包的 **Manage Actions access** 中授予此仓库写入权限。
+
+Fork 到其他账号时，工作流会自动使用小写的 `ghcr.io/<所有者>/<仓库名>`；
+同时通过 `GEMINI_WEB2API_IMAGE` 修改 Compose 的拉取地址。
 
 > **注意**: 如果 Docker 默认 bridge 网络下出现空回复 (`content: null`), 请切换到 host 网络: `docker run --network host ...` 或在 compose 文件中添加 `network_mode: host`. 这是 Gemini 上游拒绝来自 Docker NAT IP 段的请求导致的.
 

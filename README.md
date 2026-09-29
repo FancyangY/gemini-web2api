@@ -288,26 +288,104 @@ accounting and is not an upstream Gemini billing value.
 
 ## Docker
 
+### Pull from GHCR (recommended)
+
+Image: `ghcr.io/fancyangy/gemini-web2api:latest`, available for `linux/amd64` and
+`linux/arm64`. Complete the first GitHub Actions publication below before pulling.
+
+In the project directory (these commands also work in PowerShell):
+
 ```bash
 cp config.example.json config.json
-docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json gemini-web2api
 ```
 
-Or use Docker Compose:
+Edit `config.json` and replace the example `sk-gemini` API key with your own
+`api_keys`. Keep the container's `host` at `0.0.0.0` and `port` at `8081`, then start:
 
 ```bash
-cp config.example.json config.json
+docker compose pull
 docker compose up -d
+docker compose logs -f
 ```
 
-To mount a cookie file:
+The client base URL is `http://localhost:8081/v1`. To update, run
+`docker compose pull` followed by `docker compose up -d` again.
+
+Compose reads `docker-compose.yml` by default. In the project's `.env`, set
+`GEMINI_WEB2API_PORT=8082` to change the host port, or set
+`GEMINI_WEB2API_IMAGE=ghcr.io/fancyangy/gemini-web2api:v1.1.0` to pin a published
+version. These are Compose variables; application settings are read from the
+mounted `config.json`.
+
+Alternatively, pull and run the image directly:
 
 ```bash
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
+docker pull ghcr.io/fancyangy/gemini-web2api:latest
+docker run -d --name gemini-web2api --restart unless-stopped -p 8081:8081 -v ./config.json:/app/config.json:ro -v gemini-web2api-data:/data ghcr.io/fancyangy/gemini-web2api:latest
 ```
 
-Set `"cookie_file": "/app/cookie.txt"` in `config.json`.
+The image runs as UID/GID `10001:10001` with a read-only configuration mount.
+Its working directory is `/data`, so the example configuration's relative SQLite
+cache path is stored in the data volume and survives container replacement.
+`docker compose down -v` deletes that volume. On Linux, mounted configuration and
+cookie files must be readable by UID 10001; a host directory mounted at `/data`
+must also be writable by that user.
+
+### Mount a cookie file
+
+Set `"cookie_file": "/app/gemini-auth.json"` in `config.json`, and append this mount
+to the Compose service's `volumes` after exporting `gemini-auth.json`:
+
+```yaml
+      - type: bind
+        source: ./gemini-auth.json
+        target: /app/gemini-auth.json
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+Run `docker compose up -d --force-recreate` to apply the change. With `docker run`,
+add `-v ./gemini-auth.json:/app/gemini-auth.json:ro` before the image name.
+Plain `cookie.txt` files can be mounted the same way. Prefer absolute paths inside
+the container for cookies; relative paths resolve from `/data`.
+
+### Build locally
+
+After preparing `config.json`, run:
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build
+```
+
+### Publish to GitHub Container Registry
+
+Commit and push these files to `FancyangY/gemini-web2api`. The
+[Docker / GHCR workflow](https://github.com/FancyangY/gemini-web2api/actions)
+runs unit tests, builds the image, and checks startup, API authentication, and
+cache persistence across container replacement before publishing amd64 / arm64 images:
+
+| Trigger | Image tags |
+|---------|------------|
+| Push to the default `main` branch | `latest`, `main`, `sha-<short-commit>` |
+| Push a `v*` tag such as `v1.1.0` | `v1.1.0`, `sha-<short-commit>` |
+| Manually run the workflow in Actions | Selected branch or tag; updates `latest` on the default branch |
+| Pull request | Validation only; no publication |
+
+The workflow also listens for pushes to `master`; only the default branch updates
+`latest`. It uses the automatic `GITHUB_TOKEN` with declared `packages: write`
+permission, so no separate PAT is needed. Enable Actions first if this is a fork.
+Repository or organization policies must allow publishing Packages.
+
+After the first publication, open **Packages → gemini-web2api → Package settings →
+Change visibility** and select **Public** to allow anonymous `docker pull`.
+A public repository does not automatically make a new GHCR package public.
+Private packages require logging in to `ghcr.io` with credentials that have
+`read:packages` permission. If an existing package rejects publication, grant this
+repository write access under the package's **Manage Actions access** settings.
+
+On forks, the workflow automatically uses the lowercase
+`ghcr.io/<owner>/<repository>` name; set `GEMINI_WEB2API_IMAGE` to that address for Compose.
 
 > **Note**: If you get empty responses (`content: null`) with Docker's default bridge network, switch to host networking: `docker run --network host ...` or add `network_mode: host` in your compose file. This is caused by Gemini's upstream rejecting requests from certain Docker NAT IP ranges.
 

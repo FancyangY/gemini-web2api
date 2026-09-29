@@ -1,6 +1,6 @@
 services:
   gemini-web2api:
-    build: .
+    image: ${GEMINI_WEB2API_IMAGE:-ghcr.io/fancyangy/gemini-web2api:latest}
     ports:
       - "${GEMINI_WEB2API_PORT:-8081}:8081"
     volumes:
